@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import * as C from '../lib/core.js';
 import { CATALOG, PROFILE_FIELDS, cleanProfile, research, generate, ping } from '../lib/ai.js';
 import { scanSite, fetchImage } from '../lib/web.js';
+import { generateImage, imageReady } from '../lib/image.js';
 
 const { db } = C;
 const SID = '__Host-sid', PEND = '__Host-pend', DEV = '__Host-dev';
@@ -74,17 +75,18 @@ async function checkCode(key, id, input) {
 }
 async function quota(u, kind, s) {
   const [mine, all] = await Promise.all([C.usage(u.id), C.usage('all')]);
-  const lim = kind === 'research' ? s.limitResearch : s.limitGenerate;
-  if (mine[kind] >= lim) fail(429, `本日の${kind === 'research' ? '企業調査' : '生成'}回数の上限（${lim}回）に達しました`);
-  if (all.research + all.generate >= s.limitGlobal) fail(429, '本日の全体の利用上限に達しました。管理者に連絡してください');
-  if (!s.geminiKey) fail(503, 'AIが未設定です。管理者に連絡してください');
+  const lim = { research: s.limitResearch, generate: s.limitGenerate, image: s.limitImage }[kind];
+  if (mine[kind] >= lim) fail(429, `本日の${{ research: '企業調査', generate: '生成', image: '画像生成' }[kind]}回数の上限（${lim}回）に達しました`);
+  if (all.research + all.generate + all.image >= s.limitGlobal) fail(429, '本日の全体の利用上限に達しました。管理者に連絡してください');
+  if (kind === 'image' ? !imageReady(s) : !s.geminiKey) fail(503, `${kind === 'image' ? '画像生成' : 'AI'}が未設定です。管理者に連絡してください`);
 }
 const aiFail = (e) => {
   console.error(e);
   fail(502, e.status === 429 ? 'AIが混み合っています。少し待ってからお試しください'
     : e.status === 400 || e.status === 403 ? 'AIの設定に問題があります。管理者に連絡してください' : 'AIの呼び出しに失敗しました。もう一度お試しください');
 };
-const settingsView = (s) => ({ geminiKeySet: !!s.geminiKey, geminiModel: s.geminiModel, limitResearch: s.limitResearch, limitGenerate: s.limitGenerate, limitGlobal: s.limitGlobal, googleClientId: s.googleClientId, gasUrl: s.gasUrl, mailOn: s.mailOn });
+const settingsView = (s) => ({ geminiKeySet: !!s.geminiKey, geminiModel: s.geminiModel, limitResearch: s.limitResearch, limitGenerate: s.limitGenerate, limitGlobal: s.limitGlobal, googleClientId: s.googleClientId, gasUrl: s.gasUrl, mailOn: s.mailOn,
+  imageProvider: s.imageProvider, cfAccountId: s.cfAccountId, cfTokenSet: !!s.cfToken, geminiImageModel: s.geminiImageModel, limitImage: s.limitImage, imageOn: imageReady(s) });
 
 // メモリ内の簡易回数制限（ストアの操作回数を消費しない。画像取得のように回数が多い処理用）
 const recent = new Map();
@@ -215,7 +217,7 @@ on('POST auth/logout', async (ctx) => {
 on('GET me', async (ctx) => {
   const u = await me(ctx, { allowMustChange: true });
   const s = await C.getSettings();
-  return { user: pub(u, ctx.am), usage: await C.usage(u.id), limits: { research: s.limitResearch, generate: s.limitGenerate }, catalog: { ...CATALOG, profileFields: PROFILE_FIELDS } };
+  return { user: pub(u, ctx.am), usage: await C.usage(u.id), limits: { research: s.limitResearch, generate: s.limitGenerate, image: s.limitImage }, imageOn: imageReady(s), catalog: { ...CATALOG, profileFields: PROFILE_FIELDS } };
 });
 
 // --- 企業 ---
@@ -294,6 +296,19 @@ on('POST site/images', async (ctx) => {
   const exp = Date.now() + 2 * HOUR * 1000;
   return { pages: r.pages, images: r.images.map((i) => ({ alt: i.alt, src: `/api/img?u=${encodeURIComponent(i.url)}&e=${exp}&s=${C.hmac('img', `${i.url}|${exp}`)}` })) };
 });
+// --- リッチメニュー用: AIで画像を作る（サーバーには保存しない） ---
+on('POST image/generate', async (ctx) => {
+  const u = await me(ctx);
+  const prompt = str(ctx.body.prompt, 500) || fail(400, 'どんな画像にしたいかを入力してください');
+  const s = await C.getSettings();
+  await quota(u, 'image', s);
+  const r = await generateImage(s, { prompt, aspect: ctx.body.aspect === 'wide' ? 'wide' : 'square' }).catch((e) => {
+    console.error(e);
+    fail(e.status === 429 ? 429 : e.status === 503 ? 503 : 502, e.status === 429 ? '画像生成の無料枠または利用上限に達しました。時間をおいてお試しください' : e.status === 503 ? e.message : '画像を生成できませんでした。表現を変えてもう一度お試しください');
+  });
+  await C.addUsage(u.id, 'image');
+  return { type: r.type, data: r.body.toString('base64') };
+});
 on('GET img', async (ctx) => {
   const { u = '', e = '', s = '' } = ctx.query;
   if (!(Number(e) > Date.now()) || !C.safeEq(s, C.hmac('img', `${u}|${e}`))) fail(403, '画像の取得期限が切れました。もう一度取得してください');
@@ -358,7 +373,20 @@ on('PUT admin/settings', async (ctx) => {
     if (!/^[a-z0-9.\-]{3,60}$/.test(b.geminiModel)) fail(400, 'モデル名の形式が正しくありません');
     p.geminiModel = b.geminiModel;
   }
-  for (const k of ['limitResearch', 'limitGenerate', 'limitGlobal']) {
+  if (b.imageProvider !== undefined) {
+    if (!['', 'cloudflare', 'gemini'].includes(b.imageProvider)) fail(400, '画像生成のプロバイダが正しくありません');
+    p.imageProvider = b.imageProvider;
+  }
+  if (b.cfAccountId !== undefined) {
+    p.cfAccountId = str(b.cfAccountId, 64);
+    if (p.cfAccountId && !/^[0-9a-f]{32}$/.test(p.cfAccountId)) fail(400, 'CloudflareのアカウントIDは32桁の英数字です');
+  }
+  if (b.cfToken) p.cfTokenEnc = C.seal(str(b.cfToken, 200));
+  if (b.geminiImageModel !== undefined) {
+    if (!/^[a-z0-9.\-]{3,60}$/.test(b.geminiImageModel)) fail(400, '画像モデル名の形式が正しくありません');
+    p.geminiImageModel = b.geminiImageModel;
+  }
+  for (const k of ['limitResearch', 'limitGenerate', 'limitGlobal', 'limitImage']) {
     if (b[k] === undefined) continue;
     if (!Number.isInteger(b[k]) || b[k] < 0 || b[k] > 100000) fail(400, '上限は0以上の整数で入力してください');
     p[k] = b[k];
@@ -376,6 +404,13 @@ on('POST admin/test-ai', async (ctx) => {
   const s = await C.getSettings(true);
   if (!s.geminiKey) fail(400, 'APIキーが未設定です');
   return { reply: await ping(s).catch((e) => fail(502, `接続に失敗しました: ${e.message}`.slice(0, 300))) };
+});
+on('POST admin/test-image', async (ctx) => {
+  await admin(ctx);
+  const s = await C.getSettings(true);
+  if (!imageReady(s)) fail(400, '画像生成のプロバイダと認証情報を設定してください');
+  const r = await generateImage(s, { prompt: '明るいオフィスで働く人たちの後ろ姿', aspect: 'square' }).catch((e) => fail(502, `生成に失敗しました: ${e.message}`.slice(0, 300)));
+  return { type: r.type, data: r.body.toString('base64') };
 });
 // メール中継は「テスト送信→届いたコードを入力」で初めて有効化（誤設定でのログイン不能を防ぐ）
 on('POST admin/mail', async (ctx) => {

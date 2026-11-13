@@ -64,7 +64,7 @@ const go = (tab) => { S.tab = tab; render(); };
 
 async function loadMe() {
   const j = await api('GET', 'me');
-  Object.assign(S, { user: j.user, usage: j.usage, limits: j.limits, catalog: j.catalog });
+  Object.assign(S, { user: j.user, usage: j.usage, limits: j.limits, imageOn: j.imageOn, catalog: j.catalog });
 }
 async function afterLogin(j) {
   if (j.step === 'otp') S.otp = { to: j.to };
@@ -139,7 +139,7 @@ function setupView() {
 }
 
 // ---------- 共通部品 ----------
-const usagePill = () => h('p', { class: 'usage' }, `本日の利用：企業調査 ${S.usage.research}/${S.limits.research}回・生成 ${S.usage.generate}/${S.limits.generate}回`);
+const usagePill = () => h('p', { class: 'usage' }, `本日の利用：企業調査 ${S.usage.research}/${S.limits.research}回・生成 ${S.usage.generate}/${S.limits.generate}回${S.imageOn ? `・画像 ${S.usage.image}/${S.limits.image}回` : ''}`);
 
 function editor(c, onDelete) {
   const ta = h('textarea', { rows: 16, value: c.text, maxLength: 20000 });
@@ -339,10 +339,10 @@ async function richMenuView(main) {
   const cv = h('canvas', { class: 'rm-canvas' }), thumbs = h('div', { class: 'thumbs' }), cellBox = h('div', { class: 'col' }), layoutBox = h('div'), note = h('p', { class: 'muted' });
   const urlI = h('input', { type: 'url', value: rm.url, maxLength: 300, placeholder: 'https://（企業のHPや採用サイト）', oninput: (e) => (rm.url = e.target.value) });
   const redraw = () => rmDraw(cv, rm, true);
-  const addPhoto = (src, alt) => new Promise((done) => {
+  const addPhoto = (src, alt, force) => new Promise((done) => {
     const el = new Image();
     el.alt = alt || '';
-    el.onload = () => { if (Math.min(el.naturalWidth, el.naturalHeight) >= 300) rm.photos.push({ el }); done(); }; // 小さい画像（アイコン等）は候補にしない
+    el.onload = () => { if (force || Math.min(el.naturalWidth, el.naturalHeight) >= 300) rm.photos.push({ el }); done(); }; // 小さい画像（アイコン等）は候補にしない
     el.onerror = done;
     el.src = src;
   });
@@ -383,6 +383,20 @@ async function richMenuView(main) {
     drawThumbs();
   } });
   const withUrl = S.companies.filter((c) => c.url);
+  const promptI = h('textarea', { rows: 2, maxLength: 500, placeholder: '例：木目調の明るいオフィスで打ち合わせをする若手社員の後ろ姿' });
+  const aspectI = h('select', null, h('option', { value: 'square' }, '正方形（分割したマス向け）'), h('option', { value: 'wide' }, '横長（1枚・上下分割向け）'));
+  const aiBox = S.imageOn && h('div', { class: 'col' }, h('b', null, 'AIで画像を作る'),
+    h('p', { class: 'muted' }, 'HPに使える写真が無いときに。架空の画像なので、実在の社員・社屋のように見せる使い方は避けてください。'),
+    field('どんな画像にしたいか', promptI), field('形', aspectI),
+    h('div', { class: 'row' }, btn('画像を生成', async (b) => {
+      b.textContent = '生成中…（10〜40秒ほど）';
+      const j = await api('POST', 'image/generate', { prompt: promptI.value, aspect: aspectI.value });
+      const blob = new Blob([Uint8Array.from(atob(j.data), (c) => c.charCodeAt(0))], { type: j.type });
+      await addPhoto(URL.createObjectURL(blob), `AI生成: ${promptI.value}`, true);
+      await loadMe();
+      drawThumbs();
+      toast(`生成しました（本日 ${S.usage.image}/${S.limits.image}回）`);
+    }, 'primary')));
   main.replaceChildren(
     card('1. 写真を集める', h('p', { class: 'muted' }, '企業のHPから写真の候補を集めます。自社が権利を持つ画像だけを使ってください（素材サイトの写真や人物が写った写真は、利用条件と本人の了承を確認）。'),
       withUrl.length > 0 && field('登録済みの企業から選ぶ', h('select', { onchange: (e) => { if (e.target.value) urlI.value = rm.url = e.target.value; } }, h('option', { value: '' }, '選択…'), withUrl.map((c) => h('option', { value: c.url }, c.name)))),
@@ -397,7 +411,7 @@ async function richMenuView(main) {
           toast(`${j.pages.length}ページから ${rm.photos.length - before}枚の写真を取得しました`);
         }, 'primary'),
         btn('手持ちの画像を追加', () => file.click()), file),
-      note, thumbs),
+      aiBox, note, thumbs),
     card('2. レイアウトと文字', layoutBox,
       field('帯・背景の色', h('input', { type: 'color', value: rm.color, oninput: (e) => { rm.color = e.target.value; redraw(); } })),
       h('p', { class: 'muted' }, 'プレビューのマスを押すと、そのマスを編集できます（オレンジ枠は保存される画像には入りません）。'), cv, cellBox),
@@ -466,7 +480,27 @@ async function adminSettings(body) {
     const key = h('input', { type: 'password', autocomplete: 'off', maxLength: 200, placeholder: s.geminiKeySet ? '設定済み（変更するときだけ入力）' : 'Gemini APIキー' });
     const model = h('input', { value: s.geminiModel, maxLength: 60 });
     const num = (v) => h('input', { type: 'number', min: 0, max: 100000, value: v });
-    const lr = num(s.limitResearch), lg = num(s.limitGenerate), la = num(s.limitGlobal);
+    const lr = num(s.limitResearch), lg = num(s.limitGenerate), la = num(s.limitGlobal), li = num(s.limitImage);
+    function imageCard() {
+      const prov = h('select', null, [['', '使わない'], ['cloudflare', 'Cloudflare Workers AI（無料枠あり・おすすめ）'], ['gemini', 'Gemini（課金設定が必要）']].map(([v, l]) => h('option', { value: v, selected: v === s.imageProvider }, l)));
+      const acc = h('input', { value: s.cfAccountId, maxLength: 32, placeholder: '32桁の英数字' });
+      const tok = h('input', { type: 'password', autocomplete: 'off', maxLength: 200, placeholder: s.cfTokenSet ? '設定済み（変更するときだけ入力）' : 'Workers AI の権限を持つAPIトークン' });
+      const gm = h('input', { value: s.geminiImageModel, maxLength: 60 });
+      const preview = h('div');
+      const cf = h('div', null, h('div', { class: 'grid' }, field('CloudflareのアカウントID', acc), field('APIトークン', tok)),
+        h('p', { class: 'muted' }, 'Cloudflareの無料アカウントで、1日1万ニューロン（FLUX.1 schnellでおよそ数百枚）まで無料。ダッシュボードの「AI → Workers AI → REST APIを使う」でアカウントIDとトークンを発行できます。'));
+      const gem = h('div', null, field('画像モデル', gm), h('p', { class: 'muted' }, '上の「AI（Gemini）」のAPIキーを使います。画像モデルは無料枠の対象外のことが多く、課金設定が必要です（1枚あたり数円〜20円程度）。'));
+      const sync = () => { cf.hidden = prov.value !== 'cloudflare'; gem.hidden = prov.value !== 'gemini'; };
+      prov.addEventListener('change', sync); sync();
+      return card('画像生成（リッチメニューのAI画像）', field('使うサービス', prov), cf, gem,
+        h('div', { class: 'row' },
+          btn('保存', save(() => ({ imageProvider: prov.value, cfAccountId: acc.value.trim(), cfToken: tok.value || undefined, geminiImageModel: gm.value.trim() })), 'primary'),
+          btn('テスト生成', async (b) => {
+            b.textContent = '生成中…';
+            const j = await api('POST', 'admin/test-image');
+            preview.replaceChildren(h('img', { src: `data:${j.type};base64,${j.data}`, alt: 'テスト生成した画像', class: 'test-img' }));
+          })), preview);
+    }
     const gid = h('input', { value: s.googleClientId, maxLength: 200, placeholder: 'xxxxxxxx.apps.googleusercontent.com' });
     const gurl = h('input', { value: s.gasUrl, maxLength: 300, placeholder: 'https://script.google.com/macros/s/…/exec' });
     const gsec = h('input', { type: 'password', autocomplete: 'off', maxLength: 200, placeholder: 'GAS側の RELAY_SECRET と同じ値' });
@@ -477,12 +511,14 @@ async function adminSettings(body) {
         check(true, '新規登録：不可（管理者が発行したアカウントのみ）'),
         check(s.mailOn, s.mailOn ? '2段階認証（メール確認コード）：有効' : '2段階認証（メール確認コード）：無効 — 下の「メール送信」を設定すると有効になります'),
         check(s.geminiKeySet, s.geminiKeySet ? 'AIのAPIキー：設定済み（暗号化して保存）' : 'AIのAPIキー：未設定（企業調査・生成が使えません）'),
+        check(s.imageOn, s.imageOn ? `画像生成：有効（${s.imageProvider === 'gemini' ? 'Gemini' : 'Cloudflare Workers AI'}）` : '画像生成：無効（リッチメニューのAI画像が使えません）'),
         check(true, s.googleClientId ? 'Googleログイン：有効（発行済みメールアドレスのGoogleアカウントのみ）' : 'Googleログイン：無効'))),
       card('AI（Gemini）', field('APIキー', key), field('モデル', model), h('div', { class: 'row' },
         btn('保存', save(() => ({ geminiKey: key.value || undefined, geminiModel: model.value.trim() })), 'primary'),
         btn('接続テスト', async () => toast('接続OK：' + (await api('POST', 'admin/test-ai')).reply)))),
-      card('1日あたりの利用上限', h('div', { class: 'grid' }, field('企業調査（1人あたり）', lr), field('生成（1人あたり）', lg), field('全員の合計', la)),
-        btn('保存', save(() => ({ limitResearch: +lr.value, limitGenerate: +lg.value, limitGlobal: +la.value })), 'primary')),
+      imageCard(),
+      card('1日あたりの利用上限', h('div', { class: 'grid' }, field('企業調査（1人あたり）', lr), field('生成（1人あたり）', lg), field('画像生成（1人あたり）', li), field('全員の合計', la)),
+        btn('保存', save(() => ({ limitResearch: +lr.value, limitGenerate: +lg.value, limitImage: +li.value, limitGlobal: +la.value })), 'primary')),
       card('メール送信（GAS中継）', h('p', { class: 'muted' }, 'ログイン時の確認コードを送る経路です。テスト送信で自分に届いたコードを入力すると有効になります（設定ミスでログインできなくなるのを防ぐため）。'),
         pending ? [field(`${pending} に届いた確認コード`, code), h('div', { class: 'row' },
           btn('有効化する', async () => { s = await api('POST', 'admin/mail/confirm', { code: code.value }); pending = null; toast('メール送信と2段階認証を有効にしました'); draw(); }, 'primary'),
