@@ -2,6 +2,7 @@
 import crypto from 'node:crypto';
 import * as C from '../lib/core.js';
 import { CATALOG, PROFILE_FIELDS, cleanProfile, research, generate, ping } from '../lib/ai.js';
+import { scanSite, fetchImage } from '../lib/web.js';
 
 const { db } = C;
 const SID = '__Host-sid', PEND = '__Host-pend', DEV = '__Host-dev';
@@ -84,6 +85,18 @@ const aiFail = (e) => {
     : e.status === 400 || e.status === 403 ? 'AIの設定に問題があります。管理者に連絡してください' : 'AIの呼び出しに失敗しました。もう一度お試しください');
 };
 const settingsView = (s) => ({ geminiKeySet: !!s.geminiKey, geminiModel: s.geminiModel, limitResearch: s.limitResearch, limitGenerate: s.limitGenerate, limitGlobal: s.limitGlobal, googleClientId: s.googleClientId, gasUrl: s.gasUrl, mailOn: s.mailOn });
+
+// メモリ内の簡易回数制限（ストアの操作回数を消費しない。画像取得のように回数が多い処理用）
+const recent = new Map();
+function throttle(key, max, windowMs) {
+  const now = Date.now();
+  const list = (recent.get(key) || []).filter((t) => now - t < windowMs);
+  if (list.length >= max) return false;
+  list.push(now);
+  if (recent.size > 5000) recent.clear();
+  recent.set(key, list);
+  return true;
+}
 
 // ---------- ルート定義 ----------
 const routes = [];
@@ -271,6 +284,24 @@ on('PUT contents/:id', async (ctx) => {
 });
 on('DELETE contents/:id', async (ctx) => { const u = await me(ctx); await db.del(`contents/${u.id}/${ctx.params.id}`); });
 
+// --- リッチメニュー用: HPから画像候補を取得 ---
+// 画像は署名つきURL（2時間有効）で中継する。署名があるURLしか取得しないので、任意のURLの中継には使えない
+on('POST site/images', async (ctx) => {
+  const u = await me(ctx);
+  const url = httpUrl(ctx.body.url) || fail(400, 'HPのURL（https://…）を入力してください');
+  if (!throttle(`scan:${u.id}`, 6, 600000)) fail(429, '取得の回数が多すぎます。10分ほど待ってからお試しください');
+  const r = await scanSite(url).catch((e) => fail(e.status || 502, e.status ? e.message : 'サイトを取得できませんでした'));
+  const exp = Date.now() + 2 * HOUR * 1000;
+  return { pages: r.pages, images: r.images.map((i) => ({ alt: i.alt, src: `/api/img?u=${encodeURIComponent(i.url)}&e=${exp}&s=${C.hmac('img', `${i.url}|${exp}`)}` })) };
+});
+on('GET img', async (ctx) => {
+  const { u = '', e = '', s = '' } = ctx.query;
+  if (!(Number(e) > Date.now()) || !C.safeEq(s, C.hmac('img', `${u}|${e}`))) fail(403, '画像の取得期限が切れました。もう一度取得してください');
+  if (!throttle(`img:${ctx.ip}`, 400, 600000)) fail(429, TOO_MANY);
+  const r = await fetchImage(u).catch((err) => fail(err.status || 502, '画像を取得できませんでした'));
+  return { raw: r.body, type: r.type };
+});
+
 // --- 管理者: アカウント ---
 on('GET admin/users', async (ctx) => {
   await admin(ctx);
@@ -403,10 +434,11 @@ export default async function handler(req, res) {
   };
   try {
     await C.ready();
-    const pathStr = new URL(req.url, 'http://x').pathname.replace(/^\/api\//, '').replace(/\/+$/, '');
+    const reqUrl = new URL(req.url, 'http://x');
+    const pathStr = reqUrl.pathname.replace(/^\/api\//, '').replace(/\/+$/, '');
     const hit = match(req.method, pathStr) || fail(404, 'Not found');
     const ip = str(req.headers['x-real-ip'] || String(req.headers['x-forwarded-for'] || '').split(',')[0] || req.socket?.remoteAddress || 'unknown', 64);
-    const ctx = { req, res, ip, params: hit.params, body: {} };
+    const ctx = { req, res, ip, params: hit.params, body: {}, query: Object.fromEntries(reqUrl.searchParams) };
     if (req.method !== 'GET') {
       // CSRF対策: 専用ヘッダ必須 + Origin一致（Cookie は SameSite=Strict）
       const origin = req.headers.origin, host = req.headers.host;
@@ -414,7 +446,14 @@ export default async function handler(req, res) {
       if (req.headers['x-requested-with'] !== 'cai' || !sameOrigin) fail(403, '不正なリクエストです');
       ctx.body = await readBody(req);
     }
-    send(200, (await hit.fn(ctx)) ?? { ok: true });
+    const result = await hit.fn(ctx);
+    if (result?.raw) { // 画像の中継
+      res.statusCode = 200;
+      res.setHeader('Content-Type', result.type);
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      return res.end(result.raw);
+    }
+    send(200, result ?? { ok: true });
   } catch (e) {
     const status = e.status || 500;
     if (!e.status) console.error(e);

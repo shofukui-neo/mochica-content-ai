@@ -73,7 +73,7 @@ async function afterLogin(j) {
 }
 async function logout(all) {
   await api('POST', 'auth/logout', { all });
-  Object.assign(S, { user: null, companies: null, draft: {}, open: null, tab: 'create' });
+  Object.assign(S, { user: null, companies: null, draft: {}, open: null, rm: null, tab: 'create' });
   render();
 }
 
@@ -259,6 +259,154 @@ async function historyView(main) {
   draw();
 }
 
+// ---------- リッチメニュー（HPの写真や手持ちの画像を並べて、LINE規格の画像を書き出す） ----------
+const RM_SIZES = { large: { w: 2500, h: 1686, label: '大', desc: '2500×1686' }, small: { w: 2500, h: 843, label: '小', desc: '2500×843' } };
+const RM_LAYOUTS = { // cells: [列, 行, 幅, 高さ]（grid の列数×行数に対する位置）
+  large: [
+    { id: 'l6', label: '6分割', grid: [3, 2], cells: [[0, 0, 1, 1], [1, 0, 1, 1], [2, 0, 1, 1], [0, 1, 1, 1], [1, 1, 1, 1], [2, 1, 1, 1]] },
+    { id: 'l4', label: '4分割', grid: [2, 2], cells: [[0, 0, 1, 1], [1, 0, 1, 1], [0, 1, 1, 1], [1, 1, 1, 1]] },
+    { id: 'l13', label: '上1＋下3', grid: [3, 2], cells: [[0, 0, 3, 1], [0, 1, 1, 1], [1, 1, 1, 1], [2, 1, 1, 1]] },
+    { id: 'l12', label: '左1＋右2', grid: [3, 2], cells: [[0, 0, 2, 2], [2, 0, 1, 1], [2, 1, 1, 1]] },
+    { id: 'l2h', label: '上下2分割', grid: [1, 2], cells: [[0, 0, 1, 1], [0, 1, 1, 1]] },
+    { id: 'l2v', label: '左右2分割', grid: [2, 1], cells: [[0, 0, 1, 1], [1, 0, 1, 1]] },
+    { id: 'l1', label: '1枚', grid: [1, 1], cells: [[0, 0, 1, 1]] },
+  ],
+  small: [
+    { id: 's3', label: '3分割', grid: [3, 1], cells: [[0, 0, 1, 1], [1, 0, 1, 1], [2, 0, 1, 1]] },
+    { id: 's12', label: '左1＋右2', grid: [3, 1], cells: [[0, 0, 1, 1], [1, 0, 2, 1]] },
+    { id: 's21', label: '左2＋右1', grid: [3, 1], cells: [[0, 0, 2, 1], [2, 0, 1, 1]] },
+    { id: 's2', label: '2分割', grid: [2, 1], cells: [[0, 0, 1, 1], [1, 0, 1, 1]] },
+    { id: 's1', label: '1枚', grid: [1, 1], cells: [[0, 0, 1, 1]] },
+  ],
+};
+const RM_LABELS = ['会社紹介', '社員・働き方', '説明会予約', '選考フロー', 'よくある質問', 'お問い合わせ'];
+const RM_FONT = '"Hiragino Sans","Noto Sans JP","Yu Gothic UI",Meiryo,sans-serif';
+const rmLayout = (rm) => RM_LAYOUTS[rm.size].find((l) => l.id === rm.layout) || RM_LAYOUTS[rm.size][0];
+const luminance = (hex) => { const n = parseInt(hex.slice(1), 16); return (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255; };
+function rmRects(rm) { // 各マスの実寸（px）。マスの間に白い区切りを入れる
+  const { w: W, h: H } = RM_SIZES[rm.size], lay = rmLayout(rm), [gx, gy] = lay.grid, g = 6;
+  return lay.cells.map(([x, y, w, h]) => {
+    const x0 = Math.round((x * W) / gx) + (x ? g : 0), y0 = Math.round((y * H) / gy) + (y ? g : 0);
+    return [x0, y0, Math.round(((x + w) * W) / gx) - (x + w < gx ? g : 0) - x0, Math.round(((y + h) * H) / gy) - (y + h < gy ? g : 0) - y0];
+  });
+}
+function rmDraw(cv, rm, preview) {
+  const { w: W, h: H } = RM_SIZES[rm.size];
+  cv.width = W; cv.height = H;
+  const c = cv.getContext('2d');
+  c.fillStyle = '#fff';
+  c.fillRect(0, 0, W, H);
+  const ink = luminance(rm.color) > 0.6 ? '#1b2430' : '#fff';
+  rmRects(rm).forEach(([X, Y, CW, CH], i) => {
+    const cell = rm.cells[i], img = cell.img?.el, label = cell.label.trim();
+    c.save();
+    c.beginPath(); c.rect(X, Y, CW, CH); c.clip();
+    c.fillStyle = rm.color;
+    c.fillRect(X, Y, CW, CH);
+    if (img) { // マス全体を覆うように拡大し、位置はスライダーで調整
+      const s = Math.max(CW / img.naturalWidth, CH / img.naturalHeight), dw = img.naturalWidth * s, dh = img.naturalHeight * s;
+      c.drawImage(img, X - ((dw - CW) * cell.fx) / 100, Y - ((dh - CH) * cell.fy) / 100, dw, dh);
+    }
+    if (label) {
+      let size = Math.min(CH * 0.16, CW * 0.13, 150);
+      c.font = `700 ${size}px ${RM_FONT}`;
+      while (c.measureText(label).width > CW * 0.9 && size > 36) { size -= 4; c.font = `700 ${size}px ${RM_FONT}`; }
+      c.textAlign = 'center'; c.textBaseline = 'middle';
+      const band = size * 1.9;
+      if (img) { c.globalAlpha = 0.88; c.fillStyle = rm.color; c.fillRect(X, Y + CH - band, CW, band); c.globalAlpha = 1; }
+      c.fillStyle = ink;
+      c.fillText(label, X + CW / 2, img ? Y + CH - band / 2 : Y + CH / 2);
+    }
+    c.restore();
+    if (preview && i === rm.sel) { c.lineWidth = 16; c.strokeStyle = '#ffb020'; c.strokeRect(X + 8, Y + 8, CW - 16, CH - 16); }
+  });
+}
+async function rmExport(rm) {
+  const cv = document.createElement('canvas');
+  rmDraw(cv, rm, false);
+  let q = 0.92, blob;
+  do { blob = await new Promise((r) => cv.toBlob(r, 'image/jpeg', q)); q -= 0.08; } while (blob && blob.size > 1000000 && q > 0.35); // LINEの上限1MBに収める
+  if (!blob) throw new Error('画像を書き出せませんでした');
+  const url = URL.createObjectURL(blob);
+  const a = h('a', { href: url, download: `richmenu-${cv.width}x${cv.height}.jpg` });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  toast(`保存しました（${cv.width}×${cv.height}・${Math.round(blob.size / 1024)}KB）`);
+}
+async function richMenuView(main) {
+  S.companies ??= (await api('GET', 'companies')).companies;
+  const rm = (S.rm ??= { size: 'large', layout: 'l6', color: '#0e8f6f', sel: 0, photos: [], url: S.companies.find((c) => c.url)?.url || '', cells: RM_LABELS.map((label) => ({ img: null, label, fx: 50, fy: 50 })) });
+  const cv = h('canvas', { class: 'rm-canvas' }), thumbs = h('div', { class: 'thumbs' }), cellBox = h('div', { class: 'col' }), layoutBox = h('div'), note = h('p', { class: 'muted' });
+  const urlI = h('input', { type: 'url', value: rm.url, maxLength: 300, placeholder: 'https://（企業のHPや採用サイト）', oninput: (e) => (rm.url = e.target.value) });
+  const redraw = () => rmDraw(cv, rm, true);
+  const addPhoto = (src, alt) => new Promise((done) => {
+    const el = new Image();
+    el.alt = alt || '';
+    el.onload = () => { if (Math.min(el.naturalWidth, el.naturalHeight) >= 300) rm.photos.push({ el }); done(); }; // 小さい画像（アイコン等）は候補にしない
+    el.onerror = done;
+    el.src = src;
+  });
+  function drawThumbs() {
+    const used = new Set(rm.cells.map((c) => c.img));
+    note.textContent = rm.photos.length ? `写真 ${rm.photos.length}枚。プレビューでオレンジ枠のマスに入れたい写真を押してください。` : 'まだ写真がありません。HPから取得するか、手持ちの画像を追加してください。';
+    thumbs.replaceChildren(...rm.photos.map((p) => h('button', { type: 'button', class: used.has(p) ? 'thumb used' : 'thumb', title: p.el.alt, onclick: () => {
+      rm.cells[rm.sel].img = p;
+      const next = rm.cells.findIndex((c, i) => i < rmLayout(rm).cells.length && !c.img); // 次の空きマスへ
+      if (next >= 0) rm.sel = next;
+      drawCell(); drawThumbs(); redraw();
+    } }, p.el)));
+  }
+  function drawCell() {
+    const cell = rm.cells[rm.sel];
+    const slider = (key, label) => field(label, h('input', { type: 'range', min: 0, max: 100, value: cell[key], oninput: (e) => { cell[key] = +e.target.value; redraw(); } }));
+    cellBox.replaceChildren(h('b', null, `マス ${rm.sel + 1} の設定`),
+      field('ラベル（空欄にすると文字なし）', h('input', { value: cell.label, maxLength: 14, oninput: (e) => { cell.label = e.target.value; redraw(); } })),
+      cell.img && h('div', { class: 'grid' }, slider('fx', '写真の横位置'), slider('fy', '写真の縦位置')),
+      cell.img && btn('このマスの写真を外す', () => { cell.img = null; drawCell(); drawThumbs(); redraw(); }, 'link'));
+  }
+  function drawLayout() {
+    rm.layout = rmLayout(rm).id;
+    rm.sel = Math.min(rm.sel, rmLayout(rm).cells.length - 1);
+    layoutBox.replaceChildren(
+      field('サイズ', chips(Object.entries(RM_SIZES).map(([id, s]) => ({ id, ...s })), rm.size, (id) => { rm.size = id; rm.layout = null; drawLayout(); }), null, 'div'),
+      field('分割', chips(RM_LAYOUTS[rm.size], rm.layout, (id) => { rm.layout = id; drawLayout(); }), null, 'div'));
+    drawCell(); redraw();
+  }
+  cv.addEventListener('click', (e) => {
+    const r = cv.getBoundingClientRect(), x = ((e.clientX - r.left) * cv.width) / r.width, y = ((e.clientY - r.top) * cv.height) / r.height;
+    const i = rmRects(rm).findIndex(([X, Y, W, H]) => x >= X && x < X + W && y >= Y && y < Y + H);
+    if (i >= 0) { rm.sel = i; drawCell(); redraw(); }
+  });
+  const file = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp', multiple: true, hidden: true, onchange: async (e) => {
+    await Promise.all([...e.target.files].slice(0, 20).map((f) => addPhoto(URL.createObjectURL(f), f.name)));
+    e.target.value = '';
+    drawThumbs();
+  } });
+  const withUrl = S.companies.filter((c) => c.url);
+  main.replaceChildren(
+    card('1. 写真を集める', h('p', { class: 'muted' }, '企業のHPから写真の候補を集めます。自社が権利を持つ画像だけを使ってください（素材サイトの写真や人物が写った写真は、利用条件と本人の了承を確認）。'),
+      withUrl.length > 0 && field('登録済みの企業から選ぶ', h('select', { onchange: (e) => { if (e.target.value) urlI.value = rm.url = e.target.value; } }, h('option', { value: '' }, '選択…'), withUrl.map((c) => h('option', { value: c.url }, c.name)))),
+      field('HPのURL', urlI),
+      h('div', { class: 'row' },
+        btn('HPから写真を取得', async (b) => {
+          b.textContent = '取得中…（10〜20秒ほど）';
+          const j = await api('POST', 'site/images', { url: urlI.value.trim() });
+          const before = rm.photos.length;
+          await Promise.all(j.images.map((i) => addPhoto(i.src, i.alt)));
+          drawThumbs();
+          toast(`${j.pages.length}ページから ${rm.photos.length - before}枚の写真を取得しました`);
+        }, 'primary'),
+        btn('手持ちの画像を追加', () => file.click()), file),
+      note, thumbs),
+    card('2. レイアウトと文字', layoutBox,
+      field('帯・背景の色', h('input', { type: 'color', value: rm.color, oninput: (e) => { rm.color = e.target.value; redraw(); } })),
+      h('p', { class: 'muted' }, 'プレビューのマスを押すと、そのマスを編集できます（オレンジ枠は保存される画像には入りません）。'), cv, cellBox),
+    card('3. 保存', h('p', { class: 'muted' }, 'LINEの規格（JPEG・1MB以下）に合わせて書き出します。MOCHICAやLINE公式アカウントの管理画面で、リッチメニューの画像として設定してください。'),
+      btn('JPEGで保存', () => rmExport(rm), 'primary')));
+  drawThumbs();
+  drawLayout();
+}
+
 // ---------- 管理 ----------
 async function adminView(main) {
   const body = h('div');
@@ -365,8 +513,8 @@ function accountView(main) {
     card('パスワード変更', passwordForm()));
 }
 function shell() {
-  const tabs = [['create', 'コンテンツ作成'], ['companies', '企業'], ['history', '履歴'], ...(S.user.role === 'admin' ? [['admin', '管理']] : []), ['account', 'アカウント']];
-  const views = { create: createView, companies: companiesView, history: historyView, admin: adminView, account: accountView };
+  const tabs = [['create', 'コンテンツ作成'], ['companies', '企業'], ['history', '履歴'], ['richmenu', 'リッチメニュー'], ...(S.user.role === 'admin' ? [['admin', '管理']] : []), ['account', 'アカウント']];
+  const views = { create: createView, companies: companiesView, history: historyView, richmenu: richMenuView, admin: adminView, account: accountView };
   const main = h('main', null, h('p', { class: 'boot' }, '読み込み中…'));
   Promise.resolve().then(() => (views[S.tab] || createView)(main)).catch((e) => { if (S.user && !S.user.mustChange) main.replaceChildren(card('読み込みに失敗しました', h('p', null, e.message))); });
   return h('div', null,
