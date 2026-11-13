@@ -9,12 +9,10 @@
 - `lib/ai.js` AI（Gemini）・分類テンプレート・プロンプト。AIを差し替えるときは `gemini()` だけ置き換える
 - `gas/mail-relay.gs` 確認コード送信用のGAS（Vercelにはデプロイしない）
 
-## Vercelの環境変数
-| 名前 | 内容 |
-|---|---|
-| `APP_SECRET` | 32文字以上のランダム文字列。セッション署名と設定の暗号化に使う |
-| `SETUP_TOKEN` | 最初の管理者を作るときだけ使う合言葉（20文字以上） |
-| `BLOB_READ_WRITE_TOKEN` | 非公開Blobストアをプロジェクトに接続すると自動で入る |
+## Vercel側の設定
+- 非公開のBlobストアをプロジェクトに接続する（`BLOB_STORE_ID` が自動で入り、認証はOIDC。長期トークン不要）
+- 署名・暗号化用の鍵は初回起動時に自動生成してストアの `meta/secret.json` に保存する。環境変数 `APP_SECRET`（32文字以上）を入れればそちらを優先
+- 最初の管理者を作る合言葉は `meta/setup-token.json` に自動生成される（初期設定が終わると削除）。環境変数 `SETUP_TOKEN`（20文字以上）でも指定できる
 
 AIのAPIキー・メール中継・Googleログイン・利用上限は、ログイン後の「管理 → 設定」で登録する（APIキー等は暗号化して保存）。
 
@@ -25,9 +23,12 @@ AIのAPIキー・メール中継・Googleログイン・利用上限は、ログ
 - Googleログインは、発行済みメールアドレスと一致するGoogleアカウントのみ（設定でクライアントIDを入れたときだけ有効）
 
 ## 困ったとき
-- 管理者が全員ログインできない：Blobストアの `meta/setup.json` を削除すると、`SETUP_TOKEN` で初期設定をやり直せる
+- 管理者が全員ログインできない：Blobストアの `meta/setup.json` を削除すると、新しい合言葉（`meta/setup-token.json`）で初期設定をやり直せる
 - 確認コードのメールが届かずログインできない：Blobストアの `meta/settings.json` を削除（メール中継とAI設定が初期化される）
-- `APP_SECRET` を変えると全員ログアウトされ、APIキー等の再入力が必要（パスワードは影響なし）
+- 鍵（`meta/secret.json` または `APP_SECRET`）を変えると全員ログアウトされ、APIキー等の再入力が必要（パスワードは影響なし）
+
+## 容量の目安
+Vercel Blob（Hobby）は月あたり読み取り1万回・書き込み/一覧2千回まで。利用者が増えたら `lib/core.js` の `db`（get/set/create/del/keys/all の6関数）をPostgresやRedisに差し替える。
 
 ## ローカル確認
 ```

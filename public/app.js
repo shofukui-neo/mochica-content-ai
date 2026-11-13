@@ -135,7 +135,7 @@ function setupView() {
       await loadMe();
       S.tab = 'admin';
       render();
-    }, field('セットアップトークン', token), field('管理者のメールアドレス', email), field('氏名', name), field('パスワード', pw, '12文字以上・英字と数字を両方含む')));
+    }, field('セットアップトークン', token, 'Vercelの Storage → このプロジェクトのBlobストア → meta/setup-token.json に入っている値'), field('管理者のメールアドレス', email), field('氏名', name), field('パスワード', pw, '12文字以上・英字と数字を両方含む')));
 }
 
 // ---------- 共通部品 ----------

@@ -103,19 +103,20 @@ function match(method, pathStr) {
 let setupDone = false; // 完了後は毎回ストアを読まない
 on('GET status', async () => {
   setupDone ||= !!(await db.get('meta/setup'));
+  if (!setupDone) await C.setupToken(); // 合言葉を用意しておく
   return { setup: !setupDone, googleClientId: (await C.getSettings()).googleClientId || null };
 });
 
 on('POST setup', async (ctx) => {
   if (!(await C.hit('setup', ctx.ip, 10, 600))) fail(429, TOO_MANY);
-  const token = process.env.SETUP_TOKEN || '';
-  if (token.length < 20 || !C.safeEq(str(ctx.body.token, 200), token)) fail(403, 'セットアップトークンが違います');
+  if (!C.safeEq(str(ctx.body.token, 200), await C.setupToken())) fail(403, 'セットアップトークンが違います');
   const email = C.normEmail(ctx.body.email);
   if (!email) fail(400, 'メールアドレスの形式が正しくありません');
   const problem = C.passwordProblem(ctx.body.password, email);
   if (problem) fail(400, problem);
   if (!(await db.create('meta/setup', { at: Date.now(), email }))) fail(409, '初期設定は完了済みです');
   const u = newUser({ email, name: str(ctx.body.name, 60), role: 'admin', mustChange: false, pw: await C.hashPassword(ctx.body.password), createdBy: 'setup' });
+  await db.del('meta/setup-token');
   await C.audit('setup', { email, ip: ctx.ip });
   return signIn(ctx, u, 'pw');
 });
@@ -401,7 +402,7 @@ export default async function handler(req, res) {
     res.end(JSON.stringify(obj));
   };
   try {
-    if (!C.secretOk()) fail(503, 'サーバー設定が未完了です（APP_SECRET）');
+    await C.ready();
     const pathStr = new URL(req.url, 'http://x').pathname.replace(/^\/api\//, '').replace(/\/+$/, '');
     const hit = match(req.method, pathStr) || fail(404, 'Not found');
     const ip = str(req.headers['x-real-ip'] || String(req.headers['x-forwarded-for'] || '').split(',')[0] || req.socket?.remoteAddress || 'unknown', 64);
