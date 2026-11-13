@@ -8,7 +8,7 @@ import handler from '../api/index.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const HEADERS = JSON.parse(fs.readFileSync(path.join(root, 'vercel.json'), 'utf8')).headers[0].headers;
-const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.bcmap': 'application/octet-stream', '.pfb': 'application/octet-stream' };
 http.createServer((req, res) => {
   for (const h of HEADERS) res.setHeader(h.key, h.value);
   if (req.url.startsWith('/api/')) return handler(req, res);

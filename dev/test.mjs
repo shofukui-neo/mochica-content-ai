@@ -30,7 +30,7 @@ r = await X.call('GET', 'status'); ok('status after setup', r.j.setup === false)
 r = await X.call('GET', 'me'); ok('me requires login', r.s === 401 && r.j.code === 'auth');
 r = await A.call('GET', 'me'); ok('me admin + catalog', r.s === 200 && r.j.catalog.categories.length === 4 && r.j.catalog.profileFields.length === 10);
 r = await X.call('GET', 'nope'); ok('404', r.s === 404);
-r = await A.call('POST', 'companies', { name: 'x'.repeat(300000) }); ok('413 big body', r.s === 413, r.s);
+r = await A.call('POST', 'companies', { name: 'x'.repeat(4300000) }); ok('413 big body', r.s === 413, r.s);
 
 // 発行
 r = await A.call('POST', 'admin/users', { email: 'bad' }); ok('issue invalid email', r.s === 400);

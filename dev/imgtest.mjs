@@ -1,0 +1,23 @@
+import fs from 'node:fs'; globalThis.__fs = fs;
+const BASE = 'http://localhost:3000'; let pass = 0, failN = 0;
+const ok = (n, c, x = '') => { c ? pass++ : failN++; console.log(`${c ? 'PASS' : 'FAIL'} ${n} ${c ? '' : x}`); };
+const H = { 'content-type': 'application/json', 'x-requested-with': 'cai' };
+const call = async (m, p, b, cookie) => { const r = await fetch(BASE + '/api/' + p, { method: m, headers: { ...H, cookie }, body: b && JSON.stringify(b) }); return { s: r.status, j: await r.json().catch(() => ({})), r }; };
+let r = await call('POST', 'setup', { token: process.env.SETUP_TOKEN, email: 'a@ex.co.jp', password: 'correct-horse-9battery' });
+const ck = r.r.headers.getSetCookie().map((c) => c.split(';')[0]).filter((c) => !c.endsWith('=')).join('; ');
+r = await call('GET', 'me', null, ck); ok('imageOn false by default', r.j.imageOn === false && r.j.limits.image === 20 && r.j.usage.image === 0, JSON.stringify(r.j.usage));
+r = await call('POST', 'image/generate', { prompt: 'オフィス' }, ck); ok('generate 503 when unset', r.s === 503, r.s);
+r = await call('PUT', 'admin/settings', { imageProvider: 'evil' }, ck); ok('bad provider', r.s === 400);
+r = await call('PUT', 'admin/settings', { imageProvider: 'cloudflare', cfAccountId: 'xyz' }, ck); ok('bad account id', r.s === 400);
+r = await call('PUT', 'admin/settings', { imageProvider: 'cloudflare', cfAccountId: 'a'.repeat(32), cfToken: 'cf-secret-token-123', limitImage: 2 }, ck);
+ok('save cloudflare', r.s === 200 && r.j.imageOn && r.j.cfTokenSet && !JSON.stringify(r.j).includes('cf-secret'), JSON.stringify(r.j));
+ok('cf token encrypted at rest', !require_('fs').readFileSync(process.env.STORE_DIR + '/meta/settings.json', 'utf8').includes('cf-secret'));
+r = await call('POST', 'admin/test-image', null, ck); ok('test image', r.s === 200 && r.j.data && r.j.type === 'image/png');
+r = await call('POST', 'image/generate', { prompt: '' }, ck); ok('empty prompt', r.s === 400);
+r = await call('POST', 'image/generate', { prompt: 'オフィス', aspect: 'wide' }, ck); ok('generate ok', r.s === 200 && r.j.data);
+r = await call('POST', 'image/generate', { prompt: 'オフィス' }, ck); r = await call('POST', 'image/generate', { prompt: 'オフィス' }, ck); ok('image limit 429', r.s === 429, r.s);
+r = await call('GET', 'me', null, ck); ok('usage counted', r.j.usage.image === 2 && r.j.imageOn, JSON.stringify(r.j.usage));
+r = await call('POST', 'image/generate', { prompt: 'x' }); ok('requires login', r.s === 401);
+r = await call('PUT', 'admin/settings', { imageProvider: 'gemini' }, ck); ok('gemini without key -> off', r.s === 200 && r.j.imageOn === false);
+console.log(`\n${pass} passed, ${failN} failed`);
+function require_(m) { return { fs: globalThis.__fs }[m]; }

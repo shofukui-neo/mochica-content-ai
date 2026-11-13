@@ -1,8 +1,8 @@
 // APIルーター（Vercel Function 1本）。/api/* はすべてここに来る（vercel.json の rewrites）
 import crypto from 'node:crypto';
 import * as C from '../lib/core.js';
-import { CATALOG, PROFILE_FIELDS, cleanProfile, research, generate, ping } from '../lib/ai.js';
-import { scanSite, fetchImage } from '../lib/web.js';
+import { CATALOG, PROFILE_FIELDS, cleanProfile, research, generate, ping, mergeProfile, transcribe, richText } from '../lib/ai.js';
+import { scanSite, fetchImage, crawlText } from '../lib/web.js';
 import { generateImage, imageReady } from '../lib/image.js';
 
 const { db } = C;
@@ -239,9 +239,13 @@ on('POST companies/research', async (ctx) => {
   const input = companyInput(ctx.body);
   const s = await C.getSettings();
   await quota(u, 'research', s);
-  const r = await research(s, { ...input, note: str(ctx.body.note, 500) }).catch(aiFail);
-  const c = { id: C.newId(), name: r.name || input.name, url: input.url || r.url, profile: r.profile, sources: r.sources, queries: r.queries, createdAt: Date.now(), updatedAt: Date.now() };
+  // 公式サイトが分かっていれば本文も読み込んで調査に使い、素材としても残す
+  const pages = input.url ? await crawlText(input.url).catch(() => null) : null;
+  const site = pages && pages.map((p) => `【${p.title}】${p.url}\n${p.text}`).join('\n\n');
+  const r = await research(s, { ...input, note: str(ctx.body.note, 500), site }).catch(aiFail);
+  const c = { id: C.newId(), name: r.name || input.name, url: input.url || r.url, profile: r.profile, sources: r.sources, queries: r.queries, materials: [], createdAt: Date.now(), updatedAt: Date.now() };
   await db.set(`companies/${u.id}/${c.id}`, c);
+  if (site) await addMaterial(u, c, { kind: 'HP', name: `${new URL(input.url).hostname}（${pages.length}ページ）`, text: site });
   await C.addUsage(u.id, 'research');
   return { company: c };
 });
@@ -253,7 +257,96 @@ on('PUT companies/:id', async (ctx) => {
   await db.set(key, c);
   return { company: c };
 });
-on('DELETE companies/:id', async (ctx) => { const u = await me(ctx); await db.del(`companies/${u.id}/${ctx.params.id}`); });
+on('DELETE companies/:id', async (ctx) => {
+  const u = await me(ctx);
+  await Promise.all([db.del(`companies/${u.id}/${ctx.params.id}`), db.del(`materials/${u.id}/${ctx.params.id}`)]);
+});
+
+// --- 素材（企業情報の材料: HPの本文・資料・原稿・スクショ） ---
+// 本文は企業データとは別に保存し、企業データには一覧用の見出しだけを持たせる（一覧の読み込みを軽くする）
+const MAT_MAX = 20, MAT_CHARS = 30000;
+const matKey = (u, cid) => `materials/${u.id}/${cid}`;
+const matMeta = (m) => ({ id: m.id, kind: m.kind, name: m.name, chars: m.text.length, preview: m.text.slice(0, 140), createdAt: m.createdAt });
+const ownCompany = async (u, id) => (await db.get(`companies/${u.id}/${id}`)) || fail(404, '企業が見つかりません');
+async function addMaterial(u, c, m) {
+  const text = String(m.text || '').replace(/\u0000/g, '').slice(0, MAT_CHARS);
+  if (!text.trim()) fail(400, '取り込める文字がありませんでした');
+  const list = (await db.get(matKey(u, c.id))) || [];
+  if (list.length >= MAT_MAX) fail(400, `素材は1社あたり${MAT_MAX}件までです。不要なものを削除してください`);
+  list.unshift({ id: C.newId(), kind: m.kind, name: str(m.name, 100) || '素材', text, createdAt: Date.now() });
+  await db.set(matKey(u, c.id), list);
+  Object.assign(c, { materials: list.map(matMeta), updatedAt: Date.now() });
+  await db.set(`companies/${u.id}/${c.id}`, c);
+  return { company: c };
+}
+on('POST companies/:id/materials', async (ctx) => { // 貼り付けたテキスト、ブラウザで読み取ったPPTX・PDF等の文字
+  const u = await me(ctx);
+  const kind = { text: '貼り付け', file: '資料' }[ctx.body.kind] || fail(400, '不正な種類です');
+  return addMaterial(u, await ownCompany(u, ctx.params.id), { kind, name: ctx.body.name, text: str(ctx.body.text, MAT_CHARS + 1000) });
+});
+on('POST companies/:id/materials/hp', async (ctx) => {
+  const u = await me(ctx);
+  const c = await ownCompany(u, ctx.params.id);
+  const url = httpUrl(ctx.body.url || c.url) || fail(400, 'HPのURL（https://…）を入力してください');
+  if (!throttle(`scan:${u.id}`, 6, 600000)) fail(429, '取得の回数が多すぎます。10分ほど待ってからお試しください');
+  const pages = await crawlText(url).catch((e) => fail(e.status || 502, e.status ? e.message : 'サイトを取得できませんでした'));
+  return addMaterial(u, c, { kind: 'HP', name: `${new URL(url).hostname}（${pages.length}ページ）`, text: pages.map((p) => `【${p.title}】${p.url}\n${p.text}`).join('\n\n') });
+});
+on('POST companies/:id/materials/image', async (ctx) => { // スクショをAIで書き起こして素材にする
+  const u = await me(ctx);
+  const c = await ownCompany(u, ctx.params.id);
+  const type = ['image/jpeg', 'image/png', 'image/webp'].includes(ctx.body.type) ? ctx.body.type : fail(400, 'JPEG・PNG・WebPの画像を選んでください');
+  const data = typeof ctx.body.data === 'string' && /^[A-Za-z0-9+/=]+$/.test(ctx.body.data) && ctx.body.data.length < 4000000 ? ctx.body.data : fail(400, '画像が大きすぎるか、形式が正しくありません');
+  const s = await C.getSettings();
+  await quota(u, 'generate', s);
+  const text = await transcribe(s, { type, data }).catch(aiFail);
+  await C.addUsage(u.id, 'generate');
+  return addMaterial(u, c, { kind: 'スクショ', name: ctx.body.name, text });
+});
+on('DELETE companies/:id/materials/:mid', async (ctx) => {
+  const u = await me(ctx);
+  const c = await ownCompany(u, ctx.params.id);
+  const list = ((await db.get(matKey(u, c.id))) || []).filter((m) => m.id !== ctx.params.mid);
+  await db.set(matKey(u, c.id), list);
+  Object.assign(c, { materials: list.map(matMeta), updatedAt: Date.now() });
+  await db.set(`companies/${u.id}/${c.id}`, c);
+  return { company: c };
+});
+on('POST companies/:id/merge', async (ctx) => { // 素材をAIが読み、企業情報を更新（1つ前の内容は戻せるよう残す）
+  const u = await me(ctx);
+  const c = await ownCompany(u, ctx.params.id);
+  const materials = (await db.get(matKey(u, c.id))) || [];
+  if (!materials.length) fail(400, '素材がありません。先にHP・資料・テキストなどを追加してください');
+  const s = await C.getSettings();
+  await quota(u, 'research', s);
+  const profile = await mergeProfile(s, { company: c, materials }).catch(aiFail);
+  Object.assign(c, { profileBackup: c.profile, profile, updatedAt: Date.now() });
+  await db.set(`companies/${u.id}/${c.id}`, c);
+  await C.addUsage(u.id, 'research');
+  return { company: c };
+});
+on('POST companies/:id/restore', async (ctx) => {
+  const u = await me(ctx);
+  const c = await ownCompany(u, ctx.params.id);
+  if (!c.profileBackup) fail(400, '戻せる内容がありません');
+  Object.assign(c, { profile: c.profileBackup, profileBackup: null, updatedAt: Date.now() });
+  await db.set(`companies/${u.id}/${c.id}`, c);
+  return { company: c };
+});
+
+// --- リッチメッセージの文面（タイトル・画像の文字・添えるメッセージ） ---
+on('POST richmessage/text', async (ctx) => {
+  const u = await me(ctx);
+  const b = ctx.body;
+  const purpose = str(b.purpose, 300) || fail(400, '何を伝えるメッセージかを入力してください');
+  const cells = Math.min(Math.max(parseInt(b.cells, 10) || 1, 1), 6);
+  const company = b.companyId ? (/^[a-z0-9]{8,40}$/.test(b.companyId) ? await ownCompany(u, b.companyId) : fail(400, '企業の指定が正しくありません')) : null;
+  const s = await C.getSettings();
+  await quota(u, 'generate', s);
+  const r = await richText(s, { company, purpose, extra: str(b.extra, 3000), docText: str(b.docText, 20000), cells }).catch(aiFail);
+  await C.addUsage(u.id, 'generate');
+  return r;
+});
 
 // --- コンテンツ ---
 on('GET contents', async (ctx) => { const u = await me(ctx); return { contents: await db.all(`contents/${u.id}/`, 100) }; });
@@ -357,7 +450,7 @@ on('DELETE admin/users/:id', async (ctx) => {
   const a = await admin(ctx);
   const u = (await db.get(`users/${ctx.params.id}`)) || fail(404, 'アカウントが見つかりません');
   if (u.id === a.id) fail(400, '自分自身のアカウントは削除できません');
-  const keys = [...(await db.keys(`companies/${u.id}/`, 1000)), ...(await db.keys(`contents/${u.id}/`, 1000)), `otp/${u.id}`, `users/${u.id}`];
+  const keys = [...(await db.keys(`companies/${u.id}/`, 1000)), ...(await db.keys(`contents/${u.id}/`, 1000)), ...(await db.keys(`materials/${u.id}/`, 1000)), `otp/${u.id}`, `users/${u.id}`];
   await Promise.all(keys.map((k) => db.del(k)));
   await C.audit('user_deleted', { email: u.email, by: a.email });
 });
@@ -443,7 +536,7 @@ on('DELETE admin/mail', async (ctx) => {
 
 // ---------- エントリポイント ----------
 async function readBody(req) {
-  const MAX = 200000;
+  const MAX = 4200000; // スクショの取り込み（base64）に合わせた上限。各項目は個別に文字数を制限している
   if (Number(req.headers['content-length'] || 0) > MAX) fail(413, 'リクエストが大きすぎます');
   let b = req.body; // Vercel上では解析済み。ローカルではストリームから読む
   if (b === undefined) {
