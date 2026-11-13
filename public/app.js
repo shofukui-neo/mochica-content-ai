@@ -259,32 +259,27 @@ async function historyView(main) {
   draw();
 }
 
-// ---------- リッチメニュー（HPの写真や手持ちの画像を並べて、LINE規格の画像を書き出す） ----------
-const RM_SIZES = { large: { w: 2500, h: 1686, label: '大', desc: '2500×1686' }, small: { w: 2500, h: 843, label: '小', desc: '2500×843' } };
+// ---------- リッチメッセージ（HPの写真・手持ち画像・AI画像を並べて、LINE規格の画像を書き出す） ----------
+// 幅1040px固定。正方形は分割テンプレートでタップ領域を複数持てる。横長・縦長（カスタム）はタップ領域が1つ
+const RM_SIZES = { square: { w: 1040, h: 1040, label: '正方形', desc: '1040×1040' }, wide: { w: 1040, h: 520, label: '横長', desc: '1040×520' }, tall: { w: 1040, h: 1560, label: '縦長', desc: '1040×1560' } };
 const RM_LAYOUTS = { // cells: [列, 行, 幅, 高さ]（grid の列数×行数に対する位置）
-  large: [
-    { id: 'l6', label: '6分割', grid: [3, 2], cells: [[0, 0, 1, 1], [1, 0, 1, 1], [2, 0, 1, 1], [0, 1, 1, 1], [1, 1, 1, 1], [2, 1, 1, 1]] },
-    { id: 'l4', label: '4分割', grid: [2, 2], cells: [[0, 0, 1, 1], [1, 0, 1, 1], [0, 1, 1, 1], [1, 1, 1, 1]] },
-    { id: 'l13', label: '上1＋下3', grid: [3, 2], cells: [[0, 0, 3, 1], [0, 1, 1, 1], [1, 1, 1, 1], [2, 1, 1, 1]] },
-    { id: 'l12', label: '左1＋右2', grid: [3, 2], cells: [[0, 0, 2, 2], [2, 0, 1, 1], [2, 1, 1, 1]] },
-    { id: 'l2h', label: '上下2分割', grid: [1, 2], cells: [[0, 0, 1, 1], [0, 1, 1, 1]] },
-    { id: 'l2v', label: '左右2分割', grid: [2, 1], cells: [[0, 0, 1, 1], [1, 0, 1, 1]] },
-    { id: 'l1', label: '1枚', grid: [1, 1], cells: [[0, 0, 1, 1]] },
+  square: [
+    { id: 'q1', label: '1枚', grid: [1, 1], cells: [[0, 0, 1, 1]] },
+    { id: 'q2h', label: '上下2分割', grid: [1, 2], cells: [[0, 0, 1, 1], [0, 1, 1, 1]] },
+    { id: 'q2v', label: '左右2分割', grid: [2, 1], cells: [[0, 0, 1, 1], [1, 0, 1, 1]] },
+    { id: 'q12', label: '上1＋下2', grid: [2, 2], cells: [[0, 0, 2, 1], [0, 1, 1, 1], [1, 1, 1, 1]] },
+    { id: 'q4', label: '4分割', grid: [2, 2], cells: [[0, 0, 1, 1], [1, 0, 1, 1], [0, 1, 1, 1], [1, 1, 1, 1]] },
+    { id: 'q6', label: '6分割', grid: [2, 3], cells: [[0, 0, 1, 1], [1, 0, 1, 1], [0, 1, 1, 1], [1, 1, 1, 1], [0, 2, 1, 1], [1, 2, 1, 1]] },
   ],
-  small: [
-    { id: 's3', label: '3分割', grid: [3, 1], cells: [[0, 0, 1, 1], [1, 0, 1, 1], [2, 0, 1, 1]] },
-    { id: 's12', label: '左1＋右2', grid: [3, 1], cells: [[0, 0, 1, 1], [1, 0, 2, 1]] },
-    { id: 's21', label: '左2＋右1', grid: [3, 1], cells: [[0, 0, 2, 1], [2, 0, 1, 1]] },
-    { id: 's2', label: '2分割', grid: [2, 1], cells: [[0, 0, 1, 1], [1, 0, 1, 1]] },
-    { id: 's1', label: '1枚', grid: [1, 1], cells: [[0, 0, 1, 1]] },
-  ],
+  wide: [{ id: 'w1', label: '1枚', grid: [1, 1], cells: [[0, 0, 1, 1]] }],
+  tall: [{ id: 't1', label: '1枚', grid: [1, 1], cells: [[0, 0, 1, 1]] }],
 };
-const RM_LABELS = ['会社紹介', '社員・働き方', '説明会予約', '選考フロー', 'よくある質問', 'お問い合わせ'];
+const RM_LABELS = ['会社説明会 予約受付中', '社員インタビュー', '選考フロー', 'よくある質問', 'お問い合わせ', 'エントリー'];
 const RM_FONT = '"Hiragino Sans","Noto Sans JP","Yu Gothic UI",Meiryo,sans-serif';
 const rmLayout = (rm) => RM_LAYOUTS[rm.size].find((l) => l.id === rm.layout) || RM_LAYOUTS[rm.size][0];
 const luminance = (hex) => { const n = parseInt(hex.slice(1), 16); return (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255; };
 function rmRects(rm) { // 各マスの実寸（px）。マスの間に白い区切りを入れる
-  const { w: W, h: H } = RM_SIZES[rm.size], lay = rmLayout(rm), [gx, gy] = lay.grid, g = 6;
+  const { w: W, h: H } = RM_SIZES[rm.size], lay = rmLayout(rm), [gx, gy] = lay.grid, g = 3;
   return lay.cells.map(([x, y, w, h]) => {
     const x0 = Math.round((x * W) / gx) + (x ? g : 0), y0 = Math.round((y * H) / gy) + (y ? g : 0);
     return [x0, y0, Math.round(((x + w) * W) / gx) - (x + w < gx ? g : 0) - x0, Math.round(((y + h) * H) / gy) - (y + h < gy ? g : 0) - y0];
@@ -307,35 +302,36 @@ function rmDraw(cv, rm, preview) {
       const s = Math.max(CW / img.naturalWidth, CH / img.naturalHeight), dw = img.naturalWidth * s, dh = img.naturalHeight * s;
       c.drawImage(img, X - ((dw - CW) * cell.fx) / 100, Y - ((dh - CH) * cell.fy) / 100, dw, dh);
     }
-    if (label) {
-      let size = Math.min(CH * 0.16, CW * 0.13, 150);
-      c.font = `700 ${size}px ${RM_FONT}`;
-      while (c.measureText(label).width > CW * 0.9 && size > 36) { size -= 4; c.font = `700 ${size}px ${RM_FONT}`; }
+    if (label) { // 入りきらなければ縮小し、それでも長ければ2行に折り返す
+      let size = Math.min(CH * 0.14, CW * 0.11, 72), lines = [label];
+      const fit = () => { c.font = `700 ${size}px ${RM_FONT}`; return lines.every((l) => c.measureText(l).width <= CW * 0.88); };
+      while (!fit() && size > 30) size -= 2;
+      if (!fit()) { const m = Math.ceil(label.length / 2); lines = [label.slice(0, m), label.slice(m)]; size = Math.min(CH * 0.14, CW * 0.11, 72); while (!fit() && size > 18) size -= 2; }
       c.textAlign = 'center'; c.textBaseline = 'middle';
-      const band = size * 1.9;
+      const lh = size * 1.3, band = lh * lines.length + size * 0.8, cy = img ? Y + CH - band / 2 : Y + CH / 2;
       if (img) { c.globalAlpha = 0.88; c.fillStyle = rm.color; c.fillRect(X, Y + CH - band, CW, band); c.globalAlpha = 1; }
       c.fillStyle = ink;
-      c.fillText(label, X + CW / 2, img ? Y + CH - band / 2 : Y + CH / 2);
+      lines.forEach((l, k) => c.fillText(l, X + CW / 2, cy + (k - (lines.length - 1) / 2) * lh));
     }
     c.restore();
-    if (preview && i === rm.sel) { c.lineWidth = 16; c.strokeStyle = '#ffb020'; c.strokeRect(X + 8, Y + 8, CW - 16, CH - 16); }
+    if (preview && i === rm.sel && rmLayout(rm).cells.length > 1) { c.lineWidth = 8; c.strokeStyle = '#ffb020'; c.strokeRect(X + 4, Y + 4, CW - 8, CH - 8); }
   });
 }
 async function rmExport(rm) {
   const cv = document.createElement('canvas');
   rmDraw(cv, rm, false);
   let q = 0.92, blob;
-  do { blob = await new Promise((r) => cv.toBlob(r, 'image/jpeg', q)); q -= 0.08; } while (blob && blob.size > 1000000 && q > 0.35); // LINEの上限1MBに収める
+  do { blob = await new Promise((r) => cv.toBlob(r, 'image/jpeg', q)); q -= 0.08; } while (blob && blob.size > 10000000 && q > 0.35); // リッチメッセージの上限10MB
   if (!blob) throw new Error('画像を書き出せませんでした');
   const url = URL.createObjectURL(blob);
-  const a = h('a', { href: url, download: `richmenu-${cv.width}x${cv.height}.jpg` });
+  const a = h('a', { href: url, download: `richmessage-${cv.width}x${cv.height}.jpg` });
   document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
   toast(`保存しました（${cv.width}×${cv.height}・${Math.round(blob.size / 1024)}KB）`);
 }
 async function richMenuView(main) {
   S.companies ??= (await api('GET', 'companies')).companies;
-  const rm = (S.rm ??= { size: 'large', layout: 'l6', color: '#0e8f6f', sel: 0, photos: [], url: S.companies.find((c) => c.url)?.url || '', cells: RM_LABELS.map((label) => ({ img: null, label, fx: 50, fy: 50 })) });
+  const rm = (S.rm ??= { size: 'square', layout: 'q1', color: '#0e8f6f', sel: 0, photos: [], url: S.companies.find((c) => c.url)?.url || '', cells: RM_LABELS.map((label) => ({ img: null, label, fx: 50, fy: 50 })) });
   const cv = h('canvas', { class: 'rm-canvas' }), thumbs = h('div', { class: 'thumbs' }), cellBox = h('div', { class: 'col' }), layoutBox = h('div'), note = h('p', { class: 'muted' });
   const urlI = h('input', { type: 'url', value: rm.url, maxLength: 300, placeholder: 'https://（企業のHPや採用サイト）', oninput: (e) => (rm.url = e.target.value) });
   const redraw = () => rmDraw(cv, rm, true);
@@ -360,7 +356,7 @@ async function richMenuView(main) {
     const cell = rm.cells[rm.sel];
     const slider = (key, label) => field(label, h('input', { type: 'range', min: 0, max: 100, value: cell[key], oninput: (e) => { cell[key] = +e.target.value; redraw(); } }));
     cellBox.replaceChildren(h('b', null, `マス ${rm.sel + 1} の設定`),
-      field('ラベル（空欄にすると文字なし）', h('input', { value: cell.label, maxLength: 14, oninput: (e) => { cell.label = e.target.value; redraw(); } })),
+      field('文字（空欄にすると文字なし・長いと2行に折り返し）', h('input', { value: cell.label, maxLength: 30, oninput: (e) => { cell.label = e.target.value; redraw(); } })),
       cell.img && h('div', { class: 'grid' }, slider('fx', '写真の横位置'), slider('fy', '写真の縦位置')),
       cell.img && btn('このマスの写真を外す', () => { cell.img = null; drawCell(); drawThumbs(); redraw(); }, 'link'));
   }
@@ -369,7 +365,8 @@ async function richMenuView(main) {
     rm.sel = Math.min(rm.sel, rmLayout(rm).cells.length - 1);
     layoutBox.replaceChildren(
       field('サイズ', chips(Object.entries(RM_SIZES).map(([id, s]) => ({ id, ...s })), rm.size, (id) => { rm.size = id; rm.layout = null; drawLayout(); }), null, 'div'),
-      field('分割', chips(RM_LAYOUTS[rm.size], rm.layout, (id) => { rm.layout = id; drawLayout(); }), null, 'div'));
+      rm.size === 'square' ? field('分割（マスごとに別のリンクを設定できます）', chips(RM_LAYOUTS[rm.size], rm.layout, (id) => { rm.layout = id; drawLayout(); }), null, 'div')
+        : h('p', { class: 'muted' }, '横長・縦長はLINEの「カスタム」テンプレート（幅1040px）で、タップ先は1つだけです。'));
     drawCell(); redraw();
   }
   cv.addEventListener('click', (e) => {
@@ -384,7 +381,7 @@ async function richMenuView(main) {
   } });
   const withUrl = S.companies.filter((c) => c.url);
   const promptI = h('textarea', { rows: 2, maxLength: 500, placeholder: '例：木目調の明るいオフィスで打ち合わせをする若手社員の後ろ姿' });
-  const aspectI = h('select', null, h('option', { value: 'square' }, '正方形（分割したマス向け）'), h('option', { value: 'wide' }, '横長（1枚・上下分割向け）'));
+  const aspectI = h('select', null, h('option', { value: 'square' }, '正方形'), h('option', { value: 'wide' }, '横長'));
   const aiBox = S.imageOn && h('div', { class: 'col' }, h('b', null, 'AIで画像を作る'),
     h('p', { class: 'muted' }, 'HPに使える写真が無いときに。架空の画像なので、実在の社員・社屋のように見せる使い方は避けてください。'),
     field('どんな画像にしたいか', promptI), field('形', aspectI),
@@ -415,7 +412,7 @@ async function richMenuView(main) {
     card('2. レイアウトと文字', layoutBox,
       field('帯・背景の色', h('input', { type: 'color', value: rm.color, oninput: (e) => { rm.color = e.target.value; redraw(); } })),
       h('p', { class: 'muted' }, 'プレビューのマスを押すと、そのマスを編集できます（オレンジ枠は保存される画像には入りません）。'), cv, cellBox),
-    card('3. 保存', h('p', { class: 'muted' }, 'LINEの規格（JPEG・1MB以下）に合わせて書き出します。MOCHICAやLINE公式アカウントの管理画面で、リッチメニューの画像として設定してください。'),
+    card('3. 保存', h('p', { class: 'muted' }, 'LINEのリッチメッセージ用（幅1040px・JPEG）で書き出します。MOCHICAやLINE公式アカウントの管理画面でリッチメッセージを作り、同じテンプレートを選んで画像を設定してください。タップ先のリンクはそちらで設定します。'),
       btn('JPEGで保存', () => rmExport(rm), 'primary')));
   drawThumbs();
   drawLayout();
@@ -492,7 +489,7 @@ async function adminSettings(body) {
       const gem = h('div', null, field('画像モデル', gm), h('p', { class: 'muted' }, '上の「AI（Gemini）」のAPIキーを使います。画像モデルは無料枠の対象外のことが多く、課金設定が必要です（1枚あたり数円〜20円程度）。'));
       const sync = () => { cf.hidden = prov.value !== 'cloudflare'; gem.hidden = prov.value !== 'gemini'; };
       prov.addEventListener('change', sync); sync();
-      return card('画像生成（リッチメニューのAI画像）', field('使うサービス', prov), cf, gem,
+      return card('画像生成（リッチメッセージのAI画像）', field('使うサービス', prov), cf, gem,
         h('div', { class: 'row' },
           btn('保存', save(() => ({ imageProvider: prov.value, cfAccountId: acc.value.trim(), cfToken: tok.value || undefined, geminiImageModel: gm.value.trim() })), 'primary'),
           btn('テスト生成', async (b) => {
@@ -511,7 +508,7 @@ async function adminSettings(body) {
         check(true, '新規登録：不可（管理者が発行したアカウントのみ）'),
         check(s.mailOn, s.mailOn ? '2段階認証（メール確認コード）：有効' : '2段階認証（メール確認コード）：無効 — 下の「メール送信」を設定すると有効になります'),
         check(s.geminiKeySet, s.geminiKeySet ? 'AIのAPIキー：設定済み（暗号化して保存）' : 'AIのAPIキー：未設定（企業調査・生成が使えません）'),
-        check(s.imageOn, s.imageOn ? `画像生成：有効（${s.imageProvider === 'gemini' ? 'Gemini' : 'Cloudflare Workers AI'}）` : '画像生成：無効（リッチメニューのAI画像が使えません）'),
+        check(s.imageOn, s.imageOn ? `画像生成：有効（${s.imageProvider === 'gemini' ? 'Gemini' : 'Cloudflare Workers AI'}）` : '画像生成：無効（リッチメッセージのAI画像が使えません）'),
         check(true, s.googleClientId ? 'Googleログイン：有効（発行済みメールアドレスのGoogleアカウントのみ）' : 'Googleログイン：無効'))),
       card('AI（Gemini）', field('APIキー', key), field('モデル', model), h('div', { class: 'row' },
         btn('保存', save(() => ({ geminiKey: key.value || undefined, geminiModel: model.value.trim() })), 'primary'),
@@ -549,7 +546,7 @@ function accountView(main) {
     card('パスワード変更', passwordForm()));
 }
 function shell() {
-  const tabs = [['create', 'コンテンツ作成'], ['companies', '企業'], ['history', '履歴'], ['richmenu', 'リッチメニュー'], ...(S.user.role === 'admin' ? [['admin', '管理']] : []), ['account', 'アカウント']];
+  const tabs = [['create', 'コンテンツ作成'], ['companies', '企業'], ['history', '履歴'], ['richmenu', 'リッチメッセージ'], ...(S.user.role === 'admin' ? [['admin', '管理']] : []), ['account', 'アカウント']];
   const views = { create: createView, companies: companiesView, history: historyView, richmenu: richMenuView, admin: adminView, account: accountView };
   const main = h('main', null, h('p', { class: 'boot' }, '読み込み中…'));
   Promise.resolve().then(() => (views[S.tab] || createView)(main)).catch((e) => { if (S.user && !S.user.mustChange) main.replaceChildren(card('読み込みに失敗しました', h('p', null, e.message))); });

@@ -286,7 +286,7 @@ on('PUT contents/:id', async (ctx) => {
 });
 on('DELETE contents/:id', async (ctx) => { const u = await me(ctx); await db.del(`contents/${u.id}/${ctx.params.id}`); });
 
-// --- リッチメニュー用: HPから画像候補を取得 ---
+// --- リッチメッセージ用: HPから画像候補を取得 ---
 // 画像は署名つきURL（2時間有効）で中継する。署名があるURLしか取得しないので、任意のURLの中継には使えない
 on('POST site/images', async (ctx) => {
   const u = await me(ctx);
@@ -296,7 +296,7 @@ on('POST site/images', async (ctx) => {
   const exp = Date.now() + 2 * HOUR * 1000;
   return { pages: r.pages, images: r.images.map((i) => ({ alt: i.alt, src: `/api/img?u=${encodeURIComponent(i.url)}&e=${exp}&s=${C.hmac('img', `${i.url}|${exp}`)}` })) };
 });
-// --- リッチメニュー用: AIで画像を作る（サーバーには保存しない） ---
+// --- リッチメッセージ用: AIで画像を作る（サーバーには保存しない） ---
 on('POST image/generate', async (ctx) => {
   const u = await me(ctx);
   const prompt = str(ctx.body.prompt, 500) || fail(400, 'どんな画像にしたいかを入力してください');
